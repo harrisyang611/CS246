@@ -1,3 +1,1 @@
-# CS246
-# CS246
-# CS246
+This is CS246 Final Project
