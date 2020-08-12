@@ -1,0 +1,82 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+
+rm(list = ls())
+setwd("~/Documents/Code/R/BigDataChallenge")
+
+## https://health-infobase.canada.ca/covid-19/
+## Updated May 31st
+covid <- read.csv('covid19.csv',stringsAsFactors = FALSE)
+meta_data <- c('pruid','prname','date','numconf','numprob','numdeaths','numtotal','numtested','numrecover')
+dt <- covid[meta_data]
+dt$date <- as.Date(dt$date,format = '%d-%m-%Y')
+dt$numrecover <- ifelse(dt$numrecover == "N/A",0,dt$numrecover)
+
+
+filter <- dt$numrecover == ""
+dt2 <- dt[!filter,]
+
+imputation <- lm(numrecover ~ prname + numtotal + date + numconf , data = dt2,na.action = 'na.omit')
+
+pred <- predict.lm(imputation,newdata = dt[filter,c('prname','numtotal','date','numconf')] )
+dt$numrecover[filter] <- ifelse(pred < 0, 0,pred)
+
+dt$prname <- ifelse( (dt$prname == 'Nunavut' | dt$prname == 'Yukon' | 
+                      dt$prname == 'Northwest Territories' | dt$prname == 'Repatriated travellers'),
+                     'Other',dt$prname)
+
+province <- c('Alberta','British Columbia','Manitoba','New Brunswick',
+              'Newfoundland and Labrador','Nova Scotia','Ontario','Prince Edward Island',
+              'Quebec','Saskatchewan','Other','Canada')
+
+
+for (i in province) {
+  
+  dt2 <- dt[dt$prname == i,]
+  dt2$diffdeaths <- c(0,diff(dt2$numdeaths))
+  #dt2$resp <- cbind(as.numeric(dt2$numrecover),as.numeric(dt2$diffdeaths))
+  dt2$resp <- cbind(as.numeric(dt2$numrecover),as.numeric(dt2$numtotal) - as.numeric(dt2$numrecover))
+  
+  
+  model1 <- glm(resp ~ date + numconf ,family=binomial(link=logit),data=dt2)
+  summary(model1)
+  
+  from <- as.Date("2020-05-30")
+  to <- as.Date("2020-10-30")
+  diff_dates <- as.numeric(to - from) + 1
+  
+  newdata <- dt2[c('date','numconf','numdeaths')]
+  extra <- data.frame( date = seq(from,to,by='day'),
+                       numconf = rep(max(newdata$numconf), diff_dates  ),
+                       numdeaths = rep(max(newdata$numdeaths), diff_dates )
+  )
+  newdata <- rbind(newdata,extra)
+  
+  newfit <- predict(model1,newdata = newdata,type = 'response')
+  plot(newdata$date,newfit,main = paste('Predicted Chance of Recovery in', i))
+  
+}
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+
