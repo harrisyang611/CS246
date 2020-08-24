@@ -1,0 +1,251 @@
+---
+title: "STAT454_final_proj"
+output: html_document
+author: Yunkun Yang
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+setwd("~/Documents/Files/2020Winter/STAT454/Final_Project")
+library(dplyr)
+library(DMwR)
+library(knitr)
+rm(list = ls())
+
+```
+
+##Setups
+
+We will use the Califonia Housing data which is provided by SKlearn.[1] The dataset includes the data of houses and some general information about certain district (given by longitutde and latitude). There are a few columns in the dataset, longitute, latitude, housingMedianAge, total rooms, total bedrooms, populations, number of households, median income and median house value of the district. The dataset contains 20639 rows and 9 variables. We will consider each district as one record, hence we can ignore the longitute and latitude variables. 
+
+```{r loading data}
+set.seed(611)
+population <- read.csv('CaliforniaHousing/cal_housing.data')
+pop_colname <- c('longitude','latitude',"housingMedianAge","totalRooms","totalBedrooms","population", "households","Income","HouseValue")
+names(population) <- pop_colname
+population $longitude <- NULL
+population$latitude <- NULL
+N <- nrow(population)
+
+
+pop_mu <- mean(population$HouseValue)
+hist(population$HouseValue/1000,freq = TRUE,main = 'Histogram for the House value',xlab = 'House Value(in thousand)')
+abline(v = pop_mu/1000, col = "red", lwd = 2)
+
+```
+
+We will first plot the histogram of the House value so we are able to see the general trend of the response variable. The red stright line indicates the population mean. The shape is not a typical bell-shaped trend, and it contains some outliers over 500k.
+
+```{r pop linear model}
+pop_model <- lm(log(HouseValue) ~ . , data = population)
+summary(pop_model)
+```
+For our better understanding, a linear model can be constructed on the entire dataset and all variables are quite siginificant to the housing value.
+
+
+
+##Imputation
+
+We will use 6 methods of imputation as mentioned above, complete case, mean imputation, random hot deck imputation, simple regression imputation, random regression imputation and knn imputation (in this case we choose k = 10 so it won't be too computationally complex but still capture information from some of the neighbors).
+
+```{r imputation code}
+remove_miss <- function(y){
+  new_y <- y[! is.na(y)]
+  return(new_y)
+}
+
+imp_mean <- function(y){
+  return( ifelse( is.na(y) , mean(y,na.rm = TRUE) , y) )
+}
+
+
+imp_hot_deck <- function(y){
+  y_complete <- y[! is.na(y)]
+  y_miss_len <- length(y[is.na(y)])
+  y_imp <- sample(y_complete,y_miss_len)
+  new_y <- ifelse(is.na(y),y_imp,y)
+  return(new_y)
+}
+
+## With x
+imp_regress <- function(x,y,random_residual = FALSE){
+  training <- x[! is.na(y),]
+  train_y <- y[! is.na(y)]
+  training_dt <- cbind(training,train_y)
+  model1 <- lm(train_y ~ ., data = training_dt)
+  testing <- x[is.na(y),]
+  pred <- predict(model1,testing)
+  
+  if(random_residual == TRUE){
+    residual <- residuals(model1)
+    random_residual <- sample(residual,length(pred))
+    pred <- pred + random_residual
+  }
+  new_y <- c(train_y,pred)
+  new_x <- rbind(training,testing)
+  return(list(new_x,new_y))
+}
+
+imp_knn <- function(x,y,k = 10){
+  dt <- cbind(x,y)
+  dt <- knnImputation(dt,k=k)
+  return(list(dt[,-ncol(dt)],dt[,ncol(dt)]))
+}
+```
+
+
+```{r}
+imputation_simulate <- function(dt_pop, samplesize, runs = 500, 
+                                k=10, method= c("MCAR","MAR","NMAR")){
+  n <- samplesize
+  result <- data.frame()
+  for (i in seq(1,runs)) {
+    sam <- sample(N,n)
+    dt <- dt_pop[sam,]
+    y <- ifelse(dt[,method] == 1,dt$HouseValue,NA)
+    x <- dt[,c(1,2,3,4,5,6)]
+    na_no <- sum(is.na(y))
+    remove_miss_ybar <- remove_miss(y) %>% mean()
+    imp_mean_ybar <- imp_mean(y) %>% mean()
+    imp_hot_deck_ybar <- imp_hot_deck(y) %>% mean()
+    imp_regress_ybar <- imp_regress(x,y)[[2]] %>% mean()
+    imp_regress_wresid_ybar <- imp_regress(x,y,random_residual = TRUE)[[2]] %>% mean()
+    imp_knn10_ybar <- imp_knn(x,y,k=k)[[2]] %>% mean()
+  
+    temp <- list('NoNAs'= na_no, 'Complete'=remove_miss_ybar, 'Mean'= imp_mean_ybar,
+                 'Hot_deck'= imp_hot_deck_ybar,
+                 'Regression'= imp_regress_ybar, 
+                 'RegrRandResid'= imp_regress_wresid_ybar,
+                 'knn10'= imp_knn10_ybar)
+    result <- rbind(result,temp)
+  }
+  return(result)
+}
+```
+
+## MCAR Simulation
+
+### MCAR with 1 run each
+
+```{r}
+
+simulation <- data.frame()
+samplesize <- c(500,1000,2000)
+prob <- c(0.6,0.75,0.8)
+set.seed(611)
+
+## MCAR (Missing completely at random)
+print('Start Simulation (1 run each)')
+for (p in prob) {
+  MCAR <- rep(1,N)
+  mis <- sample(N,(1-p)*N)
+  MCAR[mis] <- 0
+  dt_pop <- cbind(population,MCAR)
+  
+  for (i in samplesize) {
+    temp <- imputation_simulate(dt_pop, i,runs=1,method = "MCAR")
+    #temp <- as.data.frame(colMeans(temp)) %>% t()
+    rownames(temp) <- paste0('samplesize = ', i,', (', p,')')
+    simulation<-rbind(simulation,temp)#c(simulation,temp)
+    print(paste0('Finished SRSWOR with samplesize = ', i,' with the missing prob ', p))
+  }
+}
+print('Simulation Ends')
+
+print('With the simulation of one run for each setting, it may be distorted by some of the outliers')
+kable(simulation)
+```
+
+The first simulation for MCAR with missing probability 0.4,0.25 and 0.2, the sample size are 500,1000,2000. In the table, there are number of nas, the mean under complete case, mean imputation, random hot deck, regression imputation, random imputation and knn imputation. The population mean is ```r pop_mu```, we can see the differences between each imputation method are quite significant. It can be caused by either the original distribution of the model or the chance of random selection (because we only take the sample one time).
+
+### MCAR with 100 run each
+
+```{r}
+simulation <- c()
+simulation <- data.frame()
+samplesize <- c(500,1000,2000)
+prob <- c(0.6,0.75,0.8)
+set.seed(611)
+
+## MCAR (Missing completely at random)
+print('Start Simulation (100 run each)')
+for (p in prob) {
+  MCAR <- rep(1,N)
+  mis <- sample(N,(1-p)*N)
+  MCAR[mis] <- 0
+  dt_pop <- cbind(population,MCAR)
+  
+  for (i in samplesize) {
+    temp <- imputation_simulate(dt_pop, i,runs=100,method = "MCAR")
+    temp <- as.data.frame(colMeans(temp)) %>% t()
+    rownames(temp) <- paste0('samplesize = ', i,', (', p,')')
+    simulation<-rbind(simulation,temp)#c(simulation,temp)
+    print(paste0('Finished SRSWOR with samplesize = ', i,' with the missing prob ', p))
+  }
+}
+print('Simulation Ends')
+
+```
+
+```{r}
+kable(simulation)
+print('Difference table abs(Mean after imputation - pop_mu)')
+abs(simulation[,-1]-pop_mu)
+```
+
+After run the simulation 100 times for the same settings, we have 100 means for different imputation methods. By CLT, they should all have the mean $\mu$ of the population. Because there are a few extreme values in the original distribution, by taking multiple runs, the effect of the extreme values cannot be erased, but somehow buffered.
+
+We present the second table and calculate the difference between the average of those means and the population mean. We can see that regression imputations outrun other imputation methods. One of the reason that Mean imputation and Random Hot Deck imputation do not work in this case can be that they cannot ignore the effect of the outliers. The regression works well because the original values in the population can be modelled using proper regression model as we discussed in the previous section.
+
+
+## MAR simulation with 1 run
+
+
+```{r}
+## MAR (Missing at random)
+# Response Propensity
+
+
+simulation <- c()
+simulation <- data.frame()
+samplesize <- c(500,1000,2000)
+set.seed(611)
+
+print('Start Simulation (1 run each)')
+res <- 1 + 0.05 * log(population$households) + 0.1*log(population$Income)
+rp <- exp(res) / (1+exp(res))
+MAR <- rbinom(N, 1, rp)
+dt_pop <- cbind(dt_pop,MAR)
+p_mar <- round(mean(rp),digits = 2)
+
+for (i in samplesize) {
+  temp <- imputation_simulate(dt_pop, i,runs=1,method = "MAR")
+  temp <- as.data.frame(temp)
+  rownames(temp) <- paste0('samplesize = ', i,', (', p_mar,')')
+  simulation<-rbind(simulation,temp)#c(simulation,temp)
+  print(paste0('Finished SRSWOR with samplesize = ', i,' with the missing prob ', p_mar))
+}
+print('Simulation Ends')
+kable(simulation)
+print('Difference table abs(Mean after imputation - pop_mu)')
+simulation[,-1]-pop_mu %>% abs
+
+```
+
+In the MAR mechnism, a response function is required to calculate the missing probability of each response. We propose a function $Response Rate = 1 + 0.05 * log(households) + 0.1 * log(Income)$ indicating that there are higher chance the respondents may not respond in a larger community and rich people may not willing to reveal the house value of their family. Due to the dataset contains median value of the income, we set the coefficient 0.1 to buffer the missing chance. With a inverse logistic model, we are able to control the missing rata as ```r p_mar```. 
+
+We noticed that compared to MCAR, under MAR mechnism, the imputed values did not contribute too much, and the difference between the calculated mean and population mean is much bigger. To work with MAR mechnism, more advanced imputation methods are required or a different techniques can better work.ßß
+
+
+```{r,echo=FALSE}
+
+
+## NMAR (Not missing at random)
+p <- 0.95
+sort.y = sort(population$HouseValue, decreasing=TRUE)
+ceiling   = sort.y[ceiling((1-p)*N)]
+NMAR <- ifelse(population$HouseValue > ceiling,0,1)
+dt_pop <- cbind(dt_pop,NMAR)
+
+
+```
